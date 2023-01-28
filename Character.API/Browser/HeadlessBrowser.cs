@@ -1,16 +1,25 @@
-﻿using PuppeteerSharp;
+﻿using System.Drawing;
+using Newtonsoft.Json.Linq;
+using OpenQA.Selenium;
+using OpenQA.Selenium.Chrome;
+using OpenQA.Selenium.Firefox;
+using OpenQA.Selenium.Interactions;
+using OpenQA.Selenium.Support.UI;
+using PuppeteerSharp;
+using Selenium.Extensions;
+using SeleniumUndetectedChromeDriver;
 
 namespace Character.API.Browser;
 
-public class HeadlessBrowserHandler
+public class HeadlessBrowser
 {
     private readonly BrowserOptions _options;
-    private IBrowser? _browser;
-    private IBrowserContext? incognito;
+
+    private UndetectedChromeDriver _undetectedChromeDriver;
 
     public BrowserFetcher Fetcher { get; } = new BrowserFetcher();
 
-    public HeadlessBrowserHandler(BrowserOptions? options = null)
+    public HeadlessBrowser(BrowserOptions? options = null)
     {
         _options = options ?? new BrowserOptions();
     }
@@ -23,49 +32,208 @@ public class HeadlessBrowserHandler
     public async Task InitializeConnectionAsync()
     {
         // Download Chrome.
-        await Fetcher.DownloadAsync(BrowserFetcher.DefaultChromiumRevision);
+        var browserFetcher = new BrowserFetcher(Product.Chrome);
+        var revisionInfo = await browserFetcher.DownloadAsync();
+        // await Fetcher.DownloadAsync(BrowserFetcher.DefaultChromiumRevision);
 
-        _browser = await Puppeteer.LaunchAsync(new LaunchOptions()
-        {
-            Headless = false,
-            DefaultViewport = new ViewPortOptions()
+        var options = new ChromeOptions();
+        options.AddArguments(
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-features=ChromeWhatsNewUI",
+            "--disable-blink-features=AutomationControlled",
+            "--remote-debugging-port=9222",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--ignore-certificate-errors",
+            "--disable-setuid-sandbox",
+            "--disable-infobars",
+            "--lang=it",
+            "--no-service-autorun",
+            "--no-zygote",
+            "--mute-audio",
+            "--disable-accelerated-2d-canvas",
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.3");
+
+        // var browserOptions = 
+        options.BinaryLocation = @".local-chromium\Win64-970485\chrome-win\chrome.exe";
+
+        _undetectedChromeDriver =
+            UndetectedChromeDriver.Create(
+                browserExecutablePath: revisionInfo.ExecutablePath,
+                options: options,
+                driverExecutablePath:
+                @".local-chromium\Win64-970485\chrome-win\chromedriver.exe"
+                // , headless: true, suppressWelcome: true
+            );
+
+        _undetectedChromeDriver.Manage().Window.Size = new Size(800, 1080);
+
+
+        var pluginGenerator =
+            "{\n\t\tvar ChromiumPDFPlugin = {};\n\t\tChromiumPDFPlugin.__proto__ = Plugin.prototype;\n\t\tvar plugins = {\n\t\t\t0: ChromiumPDFPlugin,\n\t\t\tdescription: 'Portable Document Format',\n\t\t\tfilename: 'internal-pdf-viewer',\n\t\t\tlength: 1,\n\t\t\tname: 'Chromium PDF Plugin',\n\t\t\t__proto__: PluginArray.prototype,\n\t\t};\n\t\treturn plugins;\n\t}";
+
+        _undetectedChromeDriver.ExecuteCdpCommand("Page.addScriptToEvaluateOnNewDocument",
+            new Dictionary<string, object>()
             {
-                Width = 500, Height = 400
-            }
-        });
+                {
+                    "source", @"
+                                     Object.defineProperty(navigator, 'plugins', {
+                                           get: () => " + pluginGenerator + @"
 
-        incognito = await _browser.CreateIncognitoBrowserContextAsync();
+                                         });
+                                     Object.defineProperty(navigator, 'mimeTypes', {
+                                           get: () => " + pluginGenerator + @"
+
+                                         });
+
+                                     Object.defineProperty(navigator, 'pdfViewerEnabled', {
+                                           get: () => true
+                                         });
+
+                                     Object.defineProperty(navigator, 'connection', {
+                                           get: () => {rtt: 0, downlink: 6.5}
+
+                                         });
+
+                                        const getParameter = WebGLRenderingContext.getParameter;
+                                        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                                          // UNMASKED_VENDOR_WEBGL
+                                          if (parameter === 37445) {
+                                            return 'Intel Open Source Technology Center';
+                                          }
+                                          // UNMASKED_RENDERER_WEBGL
+                                          if (parameter === 37446) {
+                                            return 'Mesa DRI Intel(R) Ivybridge Mobile ';
+                                          }
+
+                                          return getParameter(parameter);
+                                        };
+
+                                        ['height', 'width'].forEach(property => {
+                                          // store the existing descriptor
+                                          const imageDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, property);
+
+                                          // redefine the property with a patched descriptor
+                                          Object.defineProperty(HTMLImageElement.prototype, property, {
+                                            ...imageDescriptor,
+                                            get: function() {
+                                              // return an arbitrary non-zero dimension if the image failed to load
+                                              if (this.complete && this.naturalHeight == 0) {
+                                                return 20;
+                                              }
+                                              // otherwise, return the actual dimension
+                                              return imageDescriptor.get.apply(this);
+                                            },
+                                          });
+                                        });
+
+                                        // store the existing descriptor
+                                        const elementDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+
+                                        // redefine the property with a patched descriptor
+                                        Object.defineProperty(HTMLDivElement.prototype, 'offsetHeight', {
+                                          ...elementDescriptor,
+                                          get: function() {
+                                            if (this.id === 'modernizr') {
+                                                return 1;
+                                            }
+                                            return elementDescriptor.get.apply(this);
+                                          },
+                                        });
+"
+                },
+            }
+        );
+    }
+
+    void NewPage()
+    {
+    }
+
+    async Task WaitUntilPageLoads()
+    {
+        await Task.Run(() =>
+        {
+            var wait = new WebDriverWait(_undetectedChromeDriver, TimeSpan.FromSeconds(10));
+            wait.Until(d => ((IJavaScriptExecutor)d).ExecuteScript("return document.readyState").Equals("complete"));
+        });
     }
 
     public async Task<string> SendAsync(string url, string body, string contentType = "application/json",
         HttpMethod? method = null, string? authorization = null)
     {
-        var page = await incognito?.NewPageAsync()!;
+        method ??= HttpMethod.Post;
 
-        await page.SetRequestInterceptionAsync(true);
+        IJavaScriptExecutor jsExecutor = _undetectedChromeDriver;
 
-        page.Request += async (s, e) =>
+
+        if (method == HttpMethod.Get)
         {
-            var payload = new Payload
-            {
-                Url = url,
-                Method = method ?? HttpMethod.Post,
-                PostData = body,
-                Headers = e.Request.Headers,
-            };
+            _undetectedChromeDriver.GoToUrl(url);
 
-            payload.Headers["User-Agent"] = _options.UserAgent;
-            payload.Headers["Content-Type"] = contentType;
+            var actions = new Actions(_undetectedChromeDriver);
+            actions.MoveByOffset(100, 100);
+            actions.Pause(TimeSpan.FromMilliseconds(10));
+            actions.ScrollByAmount(0, 200);
+            actions.Perform();
 
-            if (!string.IsNullOrWhiteSpace(authorization))
-                payload.Headers["Authorization"] = authorization;
+            await WaitUntilPageLoads();
 
-            await e.Request.ContinueAsync(payload);
-        };
+//             Console.WriteLine("entire navigator class: " +
+//                               jsExecutor.ExecuteScript(@"function recur(obj) {
+//   var result = {}, _tmp;
+//   for (var i in obj) {
+//     // enabledPlugin is too nested, also skip functions
+//     if (i === 'enabledPlugin' || typeof obj[i] === 'function') {
+//         continue;
+//     } else if (typeof obj[i] === 'object') {
+//         // get props recursively
+//         _tmp = recur(obj[i]);
+//         // if object is not {}
+//         if (Object.keys(_tmp).length) {
+//             result[i] = _tmp;
+//         }
+//     } else {
+//         // string, number or boolean
+//         result[i] = obj[i];
+//     }
+//   }
+//   return result;
+// }
+//
+// return JSON.stringify(recur(window.navigator))
+//
+// ").ToString());
+//             
+            // Console.WriteLine("navigator.pdfViewerEnabled: " +
+            //                   jsExecutor.ExecuteScript("return navigator.pdfViewerEnabled").ToString());
+            //
+            // Console.WriteLine("window.outerWidth: " +
+            //                   jsExecutor.ExecuteScript("return window.outerWidth").ToString());
+            //
+            // Console.WriteLine("navigator.userAgent: " +
+            //                   jsExecutor.ExecuteScript("return navigator.userAgent").ToString());
+            //
+            // Console.WriteLine("navigator.webdriver: " +
+            //                   jsExecutor.ExecuteScript("return navigator.webdriver"));
+            //
+            // Console.WriteLine("window.chrome: " +
+            //                   jsExecutor.ExecuteScript("return window.chrome"));
+            //
+            //
+            // Console.WriteLine("window.navigator.plugins: " +
+            //                   jsExecutor.ExecuteScript("return JSON.stringify(window.navigator.plugins)"));
+            //
+            // Console.WriteLine("window.navigator.mimeTypes: " +
+            //                   jsExecutor.ExecuteScript("return JSON.stringify(window.navigator.mimeTypes)"));
 
-        var response = await page.GoToAsync(url);
-        var responseText = await response.TextAsync();
 
-        return responseText;
+            string pageSource = (string)_undetectedChromeDriver.ExecuteScript("return document.body.innerText");
+            return pageSource;
+        }
+
+        return "";
     }
 }
